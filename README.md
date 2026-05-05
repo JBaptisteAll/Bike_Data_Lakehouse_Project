@@ -1,6 +1,6 @@
 # Bike Data Lakehouse Project
 
-A complete Data Lakehouse built from scratch on **Databricks**, implementing the **Medallion Architecture** (Bronze → Silver → Gold) to consolidate and transform data from two heterogeneous source systems — a CRM and an ERP — into analytics-ready Delta tables.
+A complete Data Lakehouse built from scratch on **Databricks**, implementing an extended **Medallion Architecture** (Bronze → Silver → Gold → Platinum) to consolidate and transform data from two heterogeneous source systems — a CRM and an ERP — into business-ready analytical tables.
 
 ---
 
@@ -32,15 +32,33 @@ flowchart LR
     G3[fact_sales]
   end
 
+  subgraph Platinum
+    P1[customer_360]
+    P2[product_360]
+  end
+
   CRM --> B
   ERP --> B
   B --> S1 & S2 & S3 & S4 & S5 & S6
   S1 & S4 & S5 --> G1
   S2 & S6 --> G2
   S3 --> G3
+  G1 & G3 & G2 --> P1
+  G2 & G3 --> P2
 ```
 
-All tables are stored as **Delta format** in the `data_lakehouse_project` Databricks catalog.
+All tables are stored as **Delta format** in the `data_lakehouse_project` Databricks catalog across four schemas: `bronze`, `silver`, `gold`, `platinium`.
+
+---
+
+## Layer Responsibilities
+
+| Layer | Purpose | Format |
+|---|---|---|
+| **Bronze** | Raw ingestion — CSVs loaded as-is, never modified | Delta |
+| **Silver** | Typed, cleaned, deduplicated — one table per source | Delta |
+| **Gold** | Cross-source joins — star schema dimensional model | Delta |
+| **Platinum** | Business analytics — 360° views with scoring & segmentation | Delta |
 
 ---
 
@@ -56,6 +74,96 @@ The Gold layer follows a classic star schema:
 
 ---
 
+## Platinum Layer — Business Analytics
+
+The Platinum layer materializes two wide analytical tables by aggregating and scoring the Gold dimensional model. All time-based metrics use `MAX(order_date)` from `fact_sales` as the reference date — not `CURRENT_DATE` — so results remain consistent and reproducible regardless of when the pipeline runs.
+
+### `customer_360`
+
+One row per customer, combining demographic data with behavioural analytics and RFMV segmentation.
+
+| Column | Type | Description |
+|---|---|---|
+| `customer_id` | int | PK |
+| `fullname` | varchar | firstname + lastname |
+| `gender` | varchar | |
+| `birthdate` | date | |
+| `age` | int | Calculated from MAX(order_date) |
+| `country` | varchar | |
+| `first_order` | date | |
+| `last_order` | date | |
+| `total_orders` | bigint | Distinct order count |
+| `total_sales` | bigint | |
+| `total_quantity` | bigint | |
+| `avg_order_value` | double | total_sales / total_orders |
+| `avg_days_between_delivery_and_order` | double | |
+| `first_product_ordered` | varchar | First product ever purchased |
+| `top_category` | varchar | Category with most units bought |
+| `top_subcategory` | varchar | Sub-category with most units bought |
+| `top_product` | varchar | Product with most units bought |
+| `days_since_last_order` | int | Relative to MAX(order_date) |
+| `r_score` | int | Recency quintile (1–5) |
+| `f_score` | int | Frequency quintile (1–5) |
+| `m_score` | int | Monetary quintile (1–5) |
+| `v_score` | int | Value (avg order) quintile (1–5) |
+| `rfmv_score` | double | Average of R/F/M/V scores |
+| `rfmv_segment` | varchar | VIP / Premium / Standard / At Risk / Dormant |
+
+**RFMV Segmentation thresholds:**
+
+| Segment | Score range |
+|---|---|
+| VIP | ≥ 4.5 |
+| Premium | ≥ 3.5 |
+| Standard | ≥ 2.5 |
+| At Risk | ≥ 1.5 |
+| Dormant | < 1.5 |
+
+### `product_360`
+
+One row per product, combining catalogue data with sales performance, logistics metrics, RFM scoring, and ABC classification.
+
+| Column | Type | Description |
+|---|---|---|
+| `product_id` | int | PK |
+| `product_name` | varchar | |
+| `sub_category` | varchar | |
+| `category` | varchar | |
+| `product_line` | varchar | |
+| `product_start_date` | date | |
+| `first_order` | date | |
+| `last_order` | date | |
+| `days_since_last_order` | int | Relative to MAX(order_date) |
+| `last_ship` | date | |
+| `last_due` | date | |
+| `avg_ship_days` | double | ship_date − order_date |
+| `avg_delivery_days` | double | due_date − ship_date |
+| `avg_total_preparation_days` | double | due_date − order_date |
+| `price` | int | |
+| `product_cost` | int | |
+| `total_sales` | bigint | |
+| `total_quantity` | bigint | |
+| `total_profit` | bigint | (sales − cost) × quantity |
+| `total_orders` | bigint | |
+| `avg_order_value` | double | |
+| `status` | varchar | Active (no end date) / Inactive |
+| `recency_score` | int | Quintile based on days_since_last_order |
+| `frequency_score` | int | Quintile based on total_orders |
+| `monetary_score` | int | Quintile based on total_profit |
+| `rfm_score` | double | Average of recency/frequency/monetary |
+| `revenue_share` | double | Product's % of total revenue |
+| `abc_class` | varchar | A (top 80% revenue) / B (next 15%) / C (tail 5%) |
+
+**ABC Classification (Pareto):**
+
+| Class | Cumulative revenue share |
+|---|---|
+| A | ≤ 80% |
+| B | ≤ 95% |
+| C | > 95% |
+
+---
+
 ## Databricks Job — Automated Daily Pipeline
 
 The full pipeline is orchestrated as a **Databricks Workflow**, scheduled to run every day at **04:00 AM**.
@@ -64,26 +172,28 @@ The full pipeline is orchestrated as a **Databricks Workflow**, scheduled to run
 
 ![Pipeline Graph](assets/pipeline_graph.png)
 
-The Bronze notebook triggers all Silver notebooks in parallel. Each Gold notebook starts only once its upstream Silver dependencies have completed.
+The Bronze notebook triggers all Silver notebooks in parallel. Gold notebooks start as soon as their Silver dependencies complete. Platinum notebooks run last, once all Gold tables are ready.
 
-### Execution Timeline (sample run — Apr 28)
+### Execution Timeline
 
 ![Pipeline Timeline](assets/pipeline_timeline.png)
 
 | Task | Duration |
 |---|---|
-| `bronze_layer` | 33.5s |
-| `silver_layer_cat_g1v2` | 22.8s |
-| `silver_layer_cust_az12` | 29.7s |
-| `silver_layer_cust_info` | 27.8s |
-| `silver_layer_loc_a101` | 25.3s |
-| `silver_layer_prd_info` | 30.5s |
-| `silver_layer_sales_details` | 1m 6s |
-| `gold_layer_dim_customers` | 5m 15s |
-| `gold_layer_dim_products` | 14.2s |
-| `gold_layer_fact_sales` | 12.9s |
+| `bronze_layer` | 1m 32s |
+| `silver_layer_cat_g1v2` | 21.7s |
+| `silver_layer_cust_az12` | 26.5s |
+| `silver_layer_cust_info` | 26.1s |
+| `silver_layer_loc_a101` | 29s |
+| `silver_layer_prd_info` | 29.1s |
+| `silver_layer_sales_details` | 1m 8s |
+| `gold_layer_dim_customers` | 18s |
+| `gold_layer_dim_products` | 16.7s |
+| `gold_layer_fact_sales` | 13.7s |
+| `platinium_layer_customer_360` | 22.7s |
+| `platinium_layer_product_360` | 21.7s |
 
-Total end-to-end run: ~7 minutes. The Silver layer runs fully in parallel after Bronze; Gold tasks start as soon as their Silver dependencies complete.
+Total end-to-end run: ~4 minutes. Silver runs fully in parallel after Bronze; Gold tasks fire as soon as their dependencies are satisfied; Platinum tasks run in parallel once the full Gold layer is ready.
 
 ---
 
@@ -176,6 +286,35 @@ Direct promotion of `silver.crm_sales` — no join needed, the sales table is al
 
 ---
 
+### 4. Platinum — `04_Platinium_Layer_Notebook/`
+
+Analytical aggregations built on top of the Gold star schema. Both notebooks use pure Databricks SQL (`CREATE OR REPLACE TABLE`) with a shared `max_date` CTE anchoring all time calculations to the latest order date in the dataset.
+
+**`platinium_layer_customer_360.ipynb`** → `platinium.customer_360`
+
+Aggregates customer demographics with full purchase history, computes RFMV quintiles (Recency, Frequency, Monetary, Value) and assigns a business segment per customer.
+
+Key CTEs:
+- `max_date` — anchors recency and age calculations to `MAX(order_date)`
+- `base` — per-customer aggregates: orders, revenue, quantity, avg order value, delivery speed
+- `top_category / top_subcategory / top_product` — window-ranked preference per customer
+- `first_product` — earliest product ordered per customer
+- `rfm_scores` — NTILE(5) quintiles on recency, frequency, monetary, value
+- Final `SELECT` — computes `rfmv_score` and maps to segment label
+
+**`platinium_layer_product_360.ipynb`** → `platinium.product_360`
+
+Aggregates product catalogue with sales performance, logistics timings, RFM scoring, and ABC Pareto classification.
+
+Key CTEs:
+- `max_date` — anchors recency to `MAX(order_date)`
+- `base` — per-product aggregates: revenue, profit, quantity, logistics averages, lifecycle status
+- `rfm_score` — NTILE(5) quintiles on recency, frequency, monetary (products without sales score 0)
+- `abc` — running cumulative revenue share for Pareto classification
+- Final `SELECT` — assigns A/B/C class based on cumulative revenue thresholds (80% / 95%)
+
+---
+
 ## Sample Analytical Queries
 
 ```sql
@@ -194,6 +333,18 @@ GROUP BY p.product_name, p.category
 ORDER BY units_sold DESC
 LIMIT 10;
 
+-- RFMV segment distribution
+SELECT rfmv_segment, COUNT(*) AS nb_customers, ROUND(AVG(total_sales), 2) AS avg_revenue
+FROM platinium.customer_360
+GROUP BY rfmv_segment
+ORDER BY avg_revenue DESC;
+
+-- ABC product classes — revenue coverage check
+SELECT abc_class, COUNT(*) AS nb_products, ROUND(SUM(revenue_share) * 100, 1) AS pct_revenue
+FROM platinium.product_360
+GROUP BY abc_class
+ORDER BY abc_class;
+
 -- Latest unit price per product (handles price history)
 WITH prd_price AS (
   SELECT
@@ -211,6 +362,10 @@ WHERE rn = 1;
 
 ## Key Design Decisions
 
+- **Extended medallion — Platinum layer**: The classic Bronze/Silver/Gold pattern was extended with a Platinum layer to separate dimensional modelling (Gold) from business analytics (Platinum). This keeps Gold tables lean and reusable while concentrating all scoring and segmentation logic in a single dedicated layer.
+- **MAX(order_date) as reference date**: All time-based calculations in the Platinum layer use `MAX(order_date)` from `fact_sales` rather than `CURRENT_DATE`. This ensures full reproducibility — re-running the pipeline on any future date produces the same analytical output for the same dataset.
+- **RFMV instead of RFM**: A fourth dimension, Value (average order value), was added to the standard RFM model to better discriminate high-spending infrequent buyers from high-frequency low-value customers.
+- **ABC Pareto classification**: Products are ranked by cumulative revenue contribution using a running `SUM() OVER (ORDER BY total_sales DESC)` window, then bucketed into A (≤ 80%), B (≤ 95%), C (> 95%) — a standard inventory prioritisation framework.
 - **Key standardization across sources**: CRM and ERP used different formats for the same customer key (`cst_key` vs `CID`). Both were normalized by removing `-` and `NAS` prefixes before joining at the Gold layer.
 - **NULL cost imputation**: Rather than dropping the 2 rows with missing `prd_cost`, costs were imputed via a window average grouped on the first 12 characters of the product name — a proxy for product family.
 - **Date parsing**: ERP sale dates were stored as raw integers (`YYYYMMDD`). These were parsed by inserting separators and casting to `date`.
@@ -224,6 +379,6 @@ WHERE rn = 1;
 |---|---|
 | Databricks | Compute + catalog + notebook environment + workflow orchestration |
 | PySpark | Data transformation (Silver layer) |
+| Databricks SQL | Gold joins + Platinum analytics (CTEs, window functions, NTILE) |
 | Delta Lake | Storage format for all layers |
-| Databricks SQL | Validation queries + Gold layer joins |
-| Databricks Workflows | Daily job scheduling (04:00 AM) |
+| Databricks Workflows | Daily job scheduling (04:00 AM) — 12-task DAG |
