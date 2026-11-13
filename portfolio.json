@@ -1,0 +1,36 @@
+{
+  "id": "p_bike",
+  "order": 10,
+  "label": "ECOMMERCE_LAKEHOUSE",
+  "kanji": "輪",
+  "year": "2025",
+  "title_fr": "E-Commerce Data Lakehouse",
+  "title_en": "E-Commerce Data Lakehouse",
+  "summary_fr": "Lakehouse complet sur Databricks avec architecture Medallion étendue (Bronze → Silver → Gold → Platinum) consolidant CRM + ERP en tables analytiques business-ready.",
+  "summary_en": "Full Databricks Lakehouse with extended Medallion architecture (Bronze → Silver → Gold → Platinum) consolidating CRM + ERP into business-ready analytical tables.",
+  "body_fr": "17 tables Delta dans le catalog data_lakehouse_project, 6 sources hétérogènes (CRM cust_info/prd_info/sales_details + ERP CUST_AZ12/LOC_A101/PX_CAT_G1V2) nettoyées et dédupliquées dans Silver, jointures cross-source produisant un schéma en étoile en Gold, puis une couche Platinum business avec scoring RFMV (Recency-Frequency-Monetary-Value) via NTILE quintiles et classification ABC Pareto sur les produits. Pipeline orchestré par Databricks Workflow planifié à 4h du matin, ~4 minutes end-to-end avec parallélisation des tâches Silver. Choix d'extraire le scoring/segmentation dans une couche Platinum séparée pour garder Gold mince et indépendamment évolutive.",
+  "body_en": "17 Delta tables in data_lakehouse_project catalog, 6 heterogeneous sources (CRM cust_info/prd_info/sales_details + ERP CUST_AZ12/LOC_A101/PX_CAT_G1V2) cleaned and deduplicated in Silver, cross-source joins producing star schema in Gold, then a business Platinum layer with RFMV scoring (Recency-Frequency-Monetary-Value) via NTILE quintiles and ABC Pareto classification on products. Pipeline orchestrated by Databricks Workflow scheduled at 4am, ~4 minutes end-to-end with parallelized Silver tasks. Decision to extract scoring/segmentation into a separate Platinum layer to keep Gold lean and independently evolvable.",
+  "metrics": [
+    {
+      "label": "tables Delta",
+      "value": "17"
+    },
+    {
+      "label": "tasks DAG",
+      "value": "12"
+    },
+    {
+      "label": "end-to-end",
+      "value": "~4min"
+    }
+  ],
+  "edges_from": [
+    "t_dim_modeling"
+  ],
+  "edges_to": [
+    "c_databricks_de",
+    "s_contact"
+  ],
+  "bot_description": "Lakehouse complet from scratch sur Databricks : 6 sources CRM + ERP consolidées en Médaillon étendu Bronze→Silver→Gold→Platinum, star schema en Gold, vues 360° avec scoring et segmentation client en Platinum. 17 tables Delta, data catalog documenté, orchestration quotidienne Databricks Workflows, run complet en ~4 minutes.",
+  "mermaid": "flowchart LR\n  CRM[CRM] --> B[Bronze]\n  ERP[ERP] --> B\n  B --> S[Silver × 6]\n  S --> G[Gold ⭐]\n  G --> P[Platinum]\n  P --> A[Analytics]"
+}
